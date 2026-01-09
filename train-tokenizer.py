@@ -8,10 +8,11 @@
 
 # %%
 from pathlib import Path
-from datasets import load_dataset
 from tqdm.auto import tqdm
 
 from config import config
+from smallm.data.registry import get_dataset_info
+from smallm.data.loaders.base import load_hf_dataset, collect_texts
 
 BPETokenizer = config.tokenizer.get_bpe_class()
 print(f"Using {BPETokenizer.__name__} tokenizer")
@@ -29,30 +30,34 @@ print(f"  output_dir: {config.tokenizer.output_dir}")
 # ## 3. Load Data
 
 # %%
-print("\nLoading WikiText-103 dataset...")
-dataset = load_dataset("wikitext", "wikitext-103-raw-v1", split="train")
+# 데이터셋 이름 결정 (혼합 모드면 첫 번째 소스 사용)
+dataset_name = (
+    config.dataset.sources[0].name
+    if config.dataset.sources
+    else config.dataset.name
+)
 
-# 샘플 제한 계산 (0이면 전체)
-if config.tokenizer.sample_size == 0:
-    sample_limit = len(dataset)
-else:
-    sample_limit = min(config.tokenizer.sample_size, len(dataset))
+# 데이터셋 정보 가져오기
+dataset_info = get_dataset_info(dataset_name)
+mode_str = " (streaming)" if config.dataset.streaming else ""
+print(f"\nLoading {dataset_info.description}{mode_str}...")
 
-print(f"Sample limit: {sample_limit:,} / {len(dataset):,}")
+# HuggingFace 데이터셋 로드
+dataset = load_hf_dataset(
+    dataset_info.hf_path,
+    dataset_info.hf_subset,
+    split=config.dataset.split,
+    streaming=config.dataset.streaming,
+)
 
-# Generator 기반 수집
-def collect_texts():
-    for i, item in enumerate(dataset):
-        if i >= sample_limit:
-            break
-        text = item["text"]
-        if text.strip():
-            yield text
+# 텍스트 수집
+full_text = collect_texts(
+    dataset,
+    text_column=dataset_info.text_column,
+    max_samples=config.tokenizer.sample_size,
+    desc="Collecting",
+)
 
-texts = list(tqdm(collect_texts(), desc="Collecting"))
-full_text = "\n".join(texts)
-
-print(f"Collected samples: {len(texts):,}")
 print(f"Total characters: {len(full_text):,}")
 
 # %% [markdown]

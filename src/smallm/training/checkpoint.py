@@ -104,28 +104,30 @@ class CheckpointManager:
         return ", ".join(saved_paths)
 
     def load_best(
-        self, model: torch.nn.Module, optimizer: torch.optim.Optimizer
+        self, model: torch.nn.Module, optimizer: Optional[torch.optim.Optimizer] = None
     ) -> Tuple[Optional[int], list]:
         """best.pt 로드. 성공 시 (step, loss_history) 반환, 없으면 (None, [])."""
         best_path = self.get_best_path()
         if best_path.exists():
             checkpoint = torch.load(best_path, map_location=self.device)
             model.load_state_dict(checkpoint["model_state_dict"])
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            if optimizer is not None:
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             step = checkpoint["step"]
             loss = checkpoint.get("loss", float("inf"))
             self.best_loss = loss
-            print(f"✅ Loaded best.pt (step: {step}, loss: {loss:.4f})")
+            print(f"Loaded best.pt (step: {step}, loss: {loss:.4f})")
             return step, checkpoint.get("loss_history", [])
         return None, []
 
     def load_checkpoint(
-        self, path: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer
+        self, path: str, model: torch.nn.Module, optimizer: Optional[torch.optim.Optimizer] = None
     ) -> Tuple[int, list]:
         """특정 체크포인트 로드."""
         checkpoint = torch.load(path, map_location=self.device)
         model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if optimizer is not None:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         step = checkpoint["step"]
         loss = checkpoint.get("loss", float("inf"))
         if loss < self.best_loss:

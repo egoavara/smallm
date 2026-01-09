@@ -18,18 +18,34 @@ class DatasetSourceConfig:
     max_samples: int = 0  # 0 = 전체
 
 
+def _default_sources() -> list[DatasetSourceConfig]:
+    """기본 데이터셋 소스 목록."""
+    return [
+        DatasetSourceConfig(name="wikitext", weight=1.0),
+        DatasetSourceConfig(name="tinystories", weight=1.0),
+        DatasetSourceConfig(name="openwebtext", weight=1.0),
+    ]
+
+
 @dataclass
 class DatasetConfig:
     """데이터셋 설정."""
 
-    # 단일 데이터셋 사용 시
+    # 단일 데이터셋 사용 시 (sources가 None일 때만 사용)
     name: str = "wikitext"  # wikitext, tinystories, openwebtext
 
-    # 다중 데이터셋 혼합 사용 시 (name 대신 사용)
-    sources: Optional[list[DatasetSourceConfig]] = None
+    # 다중 데이터셋 혼합 사용 시 (기본값: 3개 데이터셋 혼합)
+    sources: Optional[list[DatasetSourceConfig]] = field(
+        default_factory=_default_sources
+    )
 
     split: str = "train"
     max_samples: int = 0  # 0 = 전체
+
+    # 스트리밍 모드 (메모리 효율적, 대용량 데이터셋용)
+    streaming: bool = True  # 기본값: 스트리밍 모드 사용
+    buffer_size: int = 10000  # 스트리밍 시 토큰 버퍼 크기
+    shuffle_buffer_size: int = 1000  # 셔플 버퍼 크기 (랜덤성 보장)
 
 
 @dataclass
@@ -55,7 +71,7 @@ class ModelConfig:
     """모델 학습 설정."""
 
     # Model
-    model_size: str = "small"  # tiny, small, medium
+    model_size: str = "medium"  # tiny, small, medium
     seq_len: int = 256
 
     # Data
@@ -87,6 +103,7 @@ class Config:
 
     tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
+    dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
     @property
     def tokenizer_dir(self) -> str:
@@ -116,4 +133,8 @@ if __name__ == "__main__":
 
     print("\nModel:")
     for k, v in vars(config.model).items():
+        print(f"  {k}: {v}")
+
+    print("\nDataset:")
+    for k, v in vars(config.dataset).items():
         print(f"  {k}: {v}")

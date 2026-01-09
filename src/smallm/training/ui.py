@@ -29,6 +29,7 @@ class TrainingUI:
         tokenizer,
         train_step_fn: Callable[[], float],
         device: str = "cpu",
+        model_size: str = "unknown",
     ):
         """Initialize Training UI.
 
@@ -39,6 +40,7 @@ class TrainingUI:
             tokenizer: Tokenizer instance
             train_step_fn: Function that performs one training step and returns loss
             device: Device string
+            model_size: Model size name (tiny, small, medium)
         """
         self.model = model
         self.optimizer = optimizer
@@ -46,6 +48,7 @@ class TrainingUI:
         self.tokenizer = tokenizer
         self.train_step_fn = train_step_fn
         self.device = device
+        self.model_size = model_size
 
         self.step = 0
         self.loss_history = []
@@ -56,6 +59,34 @@ class TrainingUI:
 
     def _build_ui(self):
         """Build the UI components."""
+        # === Model Info Section ===
+        param_count = self.model.count_parameters()
+        if param_count >= 1_000_000_000:
+            param_str = f"{param_count / 1_000_000_000:.1f}B"
+        elif param_count >= 1_000_000:
+            param_str = f"{param_count / 1_000_000:.1f}M"
+        else:
+            param_str = f"{param_count / 1_000:.1f}K"
+
+        # dtype 확인
+        dtype = next(self.model.parameters()).dtype
+        dtype_str = str(dtype).replace("torch.", "")
+
+        cfg = self.model.config
+        model_info_html = f"""
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white; padding: 12px 16px; border-radius: 8px; margin-bottom: 10px;">
+            <div style="font-size: 18px; font-weight: bold; margin-bottom: 6px;">
+                📦 {self.model_size.upper()} <span style="font-weight: normal; font-size: 14px;">(params = {param_str}, {dtype_str})</span>
+            </div>
+            <div style="font-size: 12px; opacity: 0.9;">
+                n_layers={cfg.n_layers} | n_heads={cfg.n_heads} | n_kv_heads={cfg.n_kv_heads} |
+                d_model={cfg.d_model} | d_ff={cfg.d_ff} | vocab={cfg.vocab_size} | seq_len={cfg.max_seq_len}
+            </div>
+        </div>
+        """
+        self.model_info = widgets.HTML(value=model_info_html)
+
         # === Training Section ===
         self.train_steps_input = widgets.IntText(
             value=1000, description="Steps:", layout=widgets.Layout(width="150px")
@@ -184,6 +215,7 @@ class TrainingUI:
 
         self.ui = widgets.VBox(
             [
+                self.model_info,
                 train_section,
                 widgets.HTML("<hr>"),
                 checkpoint_section,

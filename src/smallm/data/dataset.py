@@ -63,7 +63,9 @@ def load_wikitext(
     seq_len: int = 512,
     stride: int | None = None,
 ) -> TextDataset:
-    """Load WikiText-103 dataset.
+    """Load WikiText-103 dataset. (Legacy interface)
+
+    새 코드에서는 load_dataset_by_name("wikitext", ...)를 사용하세요.
 
     Args:
         tokenizer: Tokenizer to use
@@ -74,27 +76,52 @@ def load_wikitext(
     Returns:
         TextDataset instance
     """
-    from datasets import load_dataset
+    return load_dataset_by_name(
+        name="wikitext",
+        tokenizer=tokenizer,
+        split=split,
+        seq_len=seq_len,
+        stride=stride,
+    )
 
-    # Load WikiText-103
-    dataset = load_dataset("wikitext", "wikitext-103-raw-v1", split=split)
 
-    # Concatenate all text
-    print(f"Loading WikiText-103 {split} split...")
-    texts = []
-    for item in tqdm(dataset, desc="Loading"):
-        text = item["text"]
-        if text.strip():  # Skip empty lines
-            texts.append(text)
+def load_dataset_by_name(
+    name: str,
+    tokenizer: Tokenizer,
+    split: str = "train",
+    seq_len: int = 512,
+    stride: int | None = None,
+    max_samples: int = 0,
+    **kwargs,
+) -> TextDataset:
+    """이름으로 데이터셋 로드.
 
-    full_text = "\n".join(texts)
+    Args:
+        name: 데이터셋 이름 (wikitext, tinystories, openwebtext)
+        tokenizer: 토크나이저
+        split: 분할 (train, validation, test)
+        seq_len: 시퀀스 길이
+        stride: 스트라이드 (None이면 seq_len 사용)
+        max_samples: 최대 샘플 수 (0 = 전체)
+        **kwargs: 데이터셋별 추가 옵션
 
-    # Tokenize
-    print("Tokenizing...")
-    tokens = tokenizer.encode(full_text)
-    print(f"Total tokens: {len(tokens):,}")
+    Returns:
+        TextDataset
 
-    return TextDataset(tokens, seq_len, stride)
+    Raises:
+        ValueError: 알 수 없는 데이터셋 이름
+    """
+    from .registry import get_dataset_loader
+
+    loader = get_dataset_loader(name)
+    return loader(
+        tokenizer=tokenizer,
+        split=split,
+        seq_len=seq_len,
+        stride=stride,
+        max_samples=max_samples,
+        **kwargs,
+    )
 
 
 def create_dataloader(

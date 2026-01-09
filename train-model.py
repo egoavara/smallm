@@ -18,7 +18,14 @@ from typing import Optional
 import time
 
 from smallm.model import LLaMA, CONFIGS
-from smallm.data import load_wikitext, create_dataloader
+from smallm.data import (
+    load_dataset_by_name,
+    load_mixed_dataset,
+    create_dataloader,
+    load_streaming_dataset,
+    load_streaming_mixed_dataset,
+    create_streaming_dataloader,
+)
 from smallm.training import CheckpointManager, TrainingUI
 from config import config
 
@@ -148,9 +155,10 @@ def setup_model():
         weight_decay=config.model.weight_decay,
     )
 
-    # CheckpointManager 초기화
+    # CheckpointManager 초기화 (model_size를 경로에 포함)
+    checkpoint_dir = f"{config.model.checkpoint_dir}/{config.model.model_size}"
     state.checkpoint_manager = CheckpointManager(
-        checkpoint_dir=config.model.checkpoint_dir,
+        checkpoint_dir=checkpoint_dir,
         max_checkpoints=config.model.max_checkpoints,
         save_best=config.model.save_best,
         device=config.model.device,
@@ -168,22 +176,69 @@ def setup_model():
 
 def setup_data(split: str = "train"):
     """데이터 로더 설정."""
-    dataset = load_wikitext(
-        tokenizer=tokenizer,
-        split=split,
-        seq_len=config.model.seq_len,
-    )
+    is_streaming = config.dataset.streaming
 
-    state.train_loader = create_dataloader(
-        dataset,
-        batch_size=config.model.batch_size,
-        shuffle=True,
-    )
+    if is_streaming:
+        # 스트리밍 모드 (메모리 효율적, 셔플 버퍼로 랜덤성 보장)
+        if config.dataset.sources:
+            dataset = load_streaming_mixed_dataset(
+                sources=config.dataset.sources,
+                tokenizer=tokenizer,
+                split=split,
+                seq_len=config.model.seq_len,
+                buffer_size=config.dataset.buffer_size,
+                shuffle_buffer_size=config.dataset.shuffle_buffer_size,
+            )
+            dataset_name = "Mixed (streaming)"
+        else:
+            dataset = load_streaming_dataset(
+                name=config.dataset.name,
+                tokenizer=tokenizer,
+                split=split,
+                seq_len=config.model.seq_len,
+                buffer_size=config.dataset.buffer_size,
+                shuffle_buffer_size=config.dataset.shuffle_buffer_size,
+            )
+            dataset_name = f"{config.dataset.name} (streaming)"
+
+        state.train_loader = create_streaming_dataloader(
+            dataset,
+            batch_size=config.model.batch_size,
+        )
+    else:
+        # 인메모리 모드 (기존 방식)
+        if config.dataset.sources:
+            dataset = load_mixed_dataset(
+                sources=config.dataset.sources,
+                tokenizer=tokenizer,
+                split=split,
+                seq_len=config.model.seq_len,
+            )
+            dataset_name = "Mixed"
+        else:
+            dataset = load_dataset_by_name(
+                name=config.dataset.name,
+                tokenizer=tokenizer,
+                split=split,
+                seq_len=config.model.seq_len,
+                max_samples=config.dataset.max_samples,
+            )
+            dataset_name = config.dataset.name
+
+        state.train_loader = create_dataloader(
+            dataset,
+            batch_size=config.model.batch_size,
+            shuffle=True,
+        )
+
     state.reset_iter()
 
-    print(f"\n📊 Dataset: {len(dataset):,} samples")
+    print(f"\n📊 Dataset ({dataset_name}): {len(dataset):,} samples")
     print(f"   Batch size: {config.model.batch_size}")
-    print(f"   Steps per epoch: {len(state.train_loader):,}")
+    if not is_streaming:
+        print(f"   Steps per epoch: {len(state.train_loader):,}")
+    else:
+        print("   Mode: Streaming (dynamic loading)")
 
     return state.train_loader
 
@@ -354,6 +409,7 @@ def create_training_ui():
         tokenizer=tokenizer,
         train_step_fn=train_step_fn,
         device=config.model.device,
+        model_size=config.model.model_size,
     )
 
     # best.pt에서 로드된 경우 step 동기화
