@@ -20,6 +20,9 @@ pub struct RustBPE {
     merges: AHashMap<(u32, u32), u32>,
     vocab: AHashMap<u32, Vec<u8>>,
     special_tokens: AHashMap<String, u32>,
+    // For incremental training
+    pair_stats: AHashMap<(u32, u32), u64>,
+    accumulated_tokens: Vec<u32>,
 }
 
 #[pymethods]
@@ -37,6 +40,8 @@ impl RustBPE {
             merges: AHashMap::new(),
             vocab: AHashMap::new(),
             special_tokens: AHashMap::new(),
+            pair_stats: AHashMap::new(),
+            accumulated_tokens: Vec::new(),
         })
     }
 
@@ -236,6 +241,233 @@ impl RustBPE {
         if verbose {
             println!("\nTraining complete! Vocab size: {}", self.vocab.len());
         }
+
+        Ok(())
+    }
+
+    /// Accumulate pair statistics from text (Phase 1-2 only)
+    /// Call this multiple times with different datasets, then call finalize()
+    ///
+    /// Returns (num_chunks, num_tokens) for this batch
+    #[pyo3(signature = (text, verbose=false))]
+    fn accumulate(&mut self, text: &str, verbose: bool) -> PyResult<(usize, usize)> {
+        if verbose {
+            println!("Accumulating text ({} chars)...", text.len());
+        }
+
+        // Phase 1: Chunking (parallel by lines)
+        let lines: Vec<&str> = text.lines().collect();
+        let pattern = &self.regex;
+
+        let chunk_results: Vec<Vec<u32>> = lines
+            .par_iter()
+            .flat_map(|line| {
+                pattern
+                    .find_iter(line)
+                    .filter_map(|m| m.ok())
+                    .map(|m| m.as_str().bytes().map(|b| b as u32).collect::<Vec<u32>>())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        let num_chunks = chunk_results.len();
+        let num_tokens: usize = chunk_results.iter().map(|c| c.len()).sum();
+
+        // Phase 2: Count pairs (don't store tokens, just accumulate stats)
+        for chunk in &chunk_results {
+            for i in 0..chunk.len().saturating_sub(1) {
+                let pair = (chunk[i], chunk[i + 1]);
+                *self.pair_stats.entry(pair).or_insert(0) += 1;
+            }
+        }
+
+        // Also flatten tokens for finalize (needed for position-based merging)
+        if !self.accumulated_tokens.is_empty() {
+            self.accumulated_tokens.push(CHUNK_BOUNDARY);
+        }
+        for (i, chunk) in chunk_results.into_iter().enumerate() {
+            if i > 0 {
+                self.accumulated_tokens.push(CHUNK_BOUNDARY);
+            }
+            self.accumulated_tokens.extend(chunk);
+        }
+
+        if verbose {
+            println!(
+                "  -> {} chunks, {} tokens (total pairs: {})",
+                num_chunks,
+                num_tokens,
+                self.pair_stats.len()
+            );
+        }
+
+        Ok((num_chunks, num_tokens))
+    }
+
+    /// Clear accumulated statistics (call before starting new training)
+    fn clear_stats(&mut self) {
+        self.pair_stats.clear();
+        self.accumulated_tokens.clear();
+    }
+
+    /// Get current accumulated stats info
+    fn get_stats_info(&self) -> (usize, usize) {
+        (self.pair_stats.len(), self.accumulated_tokens.len())
+    }
+
+    /// Finalize training using accumulated pair statistics (Phase 3-5)
+    /// Must call accumulate() at least once before this
+    #[pyo3(signature = (vocab_size, verbose=false, callback=None))]
+    fn finalize(&mut self, vocab_size: u32, verbose: bool, callback: Option<PyObject>) -> PyResult<()> {
+        if vocab_size < 256 {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "vocab_size must be at least 256",
+            ));
+        }
+
+        if self.pair_stats.is_empty() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "No data accumulated. Call accumulate() first.",
+            ));
+        }
+
+        let num_merges = vocab_size - 256;
+
+        // Helper to emit events
+        macro_rules! emit {
+            ($cb:expr, $($key:expr => $value:expr),* $(,)?) => {
+                if let Some(ref cb) = $cb {
+                    Python::with_gil(|py| {
+                        let dict = pyo3::types::PyDict::new_bound(py);
+                        $(dict.set_item($key, $value).unwrap();)*
+                        let _ = cb.call1(py, (dict,));
+                    });
+                }
+            };
+        }
+
+        // Initialize vocab
+        self.vocab.clear();
+        for i in 0u32..256 {
+            self.vocab.insert(i, vec![i as u8]);
+        }
+        self.merges.clear();
+
+        // Take ownership of accumulated tokens
+        let mut tokens = std::mem::take(&mut self.accumulated_tokens);
+
+        if verbose {
+            println!("Finalizing BPE training...");
+            println!("  Accumulated tokens: {}", tokens.len());
+            println!("  Unique pairs: {}", self.pair_stats.len());
+        }
+
+        // Phase 3: Build pair → positions index
+        emit!(callback, "event" => "indexing_start");
+        let mut pair_positions: AHashMap<(u32, u32), Vec<usize>> = self.build_pair_index(&tokens);
+        let num_pairs = pair_positions.len();
+        emit!(callback, "event" => "indexing_done", "num_pairs" => num_pairs);
+
+        // Phase 4: Build heap from pair_stats (use accumulated counts)
+        let mut heap: BinaryHeap<(i64, (u32, u32))> = self.pair_stats
+            .iter()
+            .filter(|(_, &count)| count > 1)
+            .map(|(&pair, &count)| (count as i64, pair))
+            .collect();
+
+        let heap_size = heap.len();
+        emit!(callback, "event" => "heap_built", "heap_size" => heap_size);
+
+        if verbose {
+            println!("  Heap size: {}", heap_size);
+        }
+
+        // Phase 5: Training loop
+        emit!(callback, "event" => "training_start", "num_merges" => num_merges);
+
+        for i in 0..num_merges {
+            // Find best pair using heap (lazy deletion)
+            let (pair_a, pair_b, count) = loop {
+                match heap.pop() {
+                    Some((heap_count, pair)) => {
+                        // Verify against actual positions (may have changed during merges)
+                        let actual = pair_positions
+                            .get(&pair)
+                            .map(|p| p.len() as i64)
+                            .unwrap_or(0);
+                        if actual > 1 && actual == heap_count {
+                            break (pair.0, pair.1, actual);
+                        }
+                        // Try pair_stats as fallback for initial heap entries
+                        let stat_count = self.pair_stats.get(&pair).copied().unwrap_or(0) as i64;
+                        if actual > 1 && stat_count == heap_count {
+                            break (pair.0, pair.1, actual);
+                        }
+                    }
+                    None => {
+                        emit!(callback, "event" => "no_more_pairs", "step" => i);
+                        if verbose {
+                            println!("\nNo more pairs at iteration {}", i);
+                        }
+                        emit!(callback, "event" => "training_done", "vocab_size" => self.vocab.len());
+                        // Clear stats after training
+                        self.pair_stats.clear();
+                        return Ok(());
+                    }
+                }
+            };
+
+            let new_id = 256 + i;
+
+            // Get positions to merge
+            let positions = pair_positions.remove(&(pair_a, pair_b)).unwrap_or_default();
+
+            // Merge at positions and update index
+            self.merge_with_index(
+                &mut tokens,
+                &mut pair_positions,
+                &positions,
+                pair_a,
+                pair_b,
+                new_id,
+                &mut heap,
+            );
+
+            // Record merge
+            self.merges.insert((pair_a, pair_b), new_id);
+            let mut new_bytes = self.vocab.get(&pair_a).unwrap().clone();
+            new_bytes.extend(self.vocab.get(&pair_b).unwrap());
+            self.vocab.insert(new_id, new_bytes.clone());
+
+            // Emit merge event
+            if let Some(ref cb) = callback {
+                if i % 10 == 0 || i == num_merges - 1 {
+                    Python::with_gil(|py| {
+                        let dict = pyo3::types::PyDict::new_bound(py);
+                        dict.set_item("event", "merge").unwrap();
+                        dict.set_item("step", i).unwrap();
+                        dict.set_item("total", num_merges).unwrap();
+                        dict.set_item("token", String::from_utf8_lossy(&new_bytes).to_string()).unwrap();
+                        dict.set_item("count", count).unwrap();
+                        dict.set_item("new_id", new_id).unwrap();
+                        dict.set_item("pair", (pair_a, pair_b)).unwrap();
+                        let _ = cb.call1(py, (dict,));
+                    });
+                }
+            } else if verbose && i % 100 == 0 {
+                let token_str = String::from_utf8_lossy(&new_bytes);
+                let display: String = token_str.chars().take(10).collect();
+                println!("  [{}/{}] token={:?}, count={}", i, num_merges, display, count);
+            }
+        }
+
+        emit!(callback, "event" => "training_done", "vocab_size" => self.vocab.len());
+        if verbose {
+            println!("\nTraining complete! Vocab size: {}", self.vocab.len());
+        }
+
+        // Clear stats after training
+        self.pair_stats.clear();
 
         Ok(())
     }

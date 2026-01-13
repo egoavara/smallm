@@ -1,114 +1,101 @@
 # %% [markdown]
 # # SmallM - Tokenizer Training
-#
-# BPE 토크나이저 학습 스크립트
-
-# %% [markdown]
-# ## 1. Setup
 
 # %%
 from pathlib import Path
-from tqdm.auto import tqdm
+import gc
 
-from config import config
-from smallm.data.registry import get_dataset_info
-from smallm.data.loaders.base import load_hf_dataset, collect_texts
+from config import config, MODES
+from smallm.data import iter_texts
 
-BPETokenizer = config.tokenizer.get_bpe_class()
-print(f"Using {BPETokenizer.__name__} tokenizer")
-
-# %% [markdown]
-# ## 2. Configuration
+BPETokenizer = config.get_bpe_class()
 
 # %%
+SAMPLE_RATIO = 0.3
+CHUNK_SIZE = 5000
+
+all_datasets = config.all_datasets
+
 print("=== Tokenizer Configuration ===")
-print(f"  vocab_size: {config.tokenizer.vocab_size}")
-print(f"  sample_size: {config.tokenizer.sample_size}")
-print(f"  output_dir: {config.tokenizer.output_dir}")
-
-# %% [markdown]
-# ## 3. Load Data
+print(f"  vocab_size: {config.vocab_size}")
+print(f"  sample_ratio: {SAMPLE_RATIO * 100:.0f}%")
+print(f"  chunk_size: {CHUNK_SIZE}")
+print(f"  datasets: {all_datasets}")
 
 # %%
-# 데이터셋 이름 결정 (혼합 모드면 첫 번째 소스 사용)
-dataset_name = (
-    config.dataset.sources[0].name
-    if config.dataset.sources
-    else config.dataset.name
-)
-
-# 데이터셋 정보 가져오기
-dataset_info = get_dataset_info(dataset_name)
-mode_str = " (streaming)" if config.dataset.streaming else ""
-print(f"\nLoading {dataset_info.description}{mode_str}...")
-
-# HuggingFace 데이터셋 로드
-dataset = load_hf_dataset(
-    dataset_info.hf_path,
-    dataset_info.hf_subset,
-    split=config.dataset.split,
-    streaming=config.dataset.streaming,
-)
-
-# 텍스트 수집
-full_text = collect_texts(
-    dataset,
-    text_column=dataset_info.text_column,
-    max_samples=config.tokenizer.sample_size,
-    desc="Collecting",
-)
-
-print(f"Total characters: {len(full_text):,}")
-
-# %% [markdown]
-# ## 4. Train Tokenizer
-
-# %%
-print(f"\nTraining BPE tokenizer (vocab_size={config.tokenizer.vocab_size})...")
-print(f"Merges needed: {config.tokenizer.vocab_size - 256}")
-
 tokenizer = BPETokenizer()
-tokenizer.train(full_text, config.tokenizer.vocab_size, verbose=True)
-
-# %% [markdown]
-# ## 5. Add Special Tokens & Save
 
 # %%
-# Special tokens 등록
+print(f"\n{'=' * 50}")
+print("Accumulating texts...")
+print("=" * 50)
+
+texts = []
+total_chunks = 0
+total_tokens = 0
+
+for text in iter_texts(all_datasets, sample_ratio=SAMPLE_RATIO):
+    texts.append(text)
+
+    if len(texts) >= CHUNK_SIZE:
+        chunk_text = "\n".join(texts)
+        num_chunks, num_tokens = tokenizer.accumulate(chunk_text)
+        total_chunks += num_chunks
+        total_tokens += num_tokens
+        texts = []
+        gc.collect()
+
+        num_pairs, total_tok = tokenizer.get_stats_info()
+        print(f"  Accumulated: {total_chunks:,} chunks, {total_tokens:,} tokens, {num_pairs:,} pairs")
+
+if texts:
+    chunk_text = "\n".join(texts)
+    num_chunks, num_tokens = tokenizer.accumulate(chunk_text)
+    total_chunks += num_chunks
+    total_tokens += num_tokens
+    del texts
+    gc.collect()
+
+num_pairs, total_tok = tokenizer.get_stats_info()
+print(f"\n✅ Total: {total_chunks:,} chunks, {total_tokens:,} tokens, {num_pairs:,} pairs")
+
+# %%
+print(f"\n{'=' * 50}")
+print("Finalizing BPE training...")
+print("=" * 50)
+
+tokenizer.finalize(config.vocab_size, verbose=True)
+
+# %%
+base_vocab = config.vocab_size
 special_tokens = {
-    "<|endoftext|>": config.tokenizer.vocab_size,
-    "<|pad|>": config.tokenizer.vocab_size + 1,
+    "<|endoftext|>": base_vocab,
+    "<|pad|>": base_vocab + 1,
 }
+
+for i, token in enumerate(config.special_tokens):
+    special_tokens[token] = base_vocab + 2 + i
+
 tokenizer.register_special_tokens(special_tokens)
 
-# 저장 (클래스명으로 파일 구분)
-output_dir = Path(config.tokenizer.output_dir)
+# Save
+output_dir = Path(config.tokenizer_dir)
 output_dir.mkdir(parents=True, exist_ok=True)
-tokenizer_name = BPETokenizer.__name__
-save_path = output_dir / tokenizer_name
+save_path = output_dir / BPETokenizer.__name__
 tokenizer.save(str(save_path))
-print(f"\n✅ Tokenizer saved to {save_path}.model")
-print(f"   Final vocab size: {tokenizer.vocab_size}")
 
-# %% [markdown]
-# ## 6. Test Tokenizer
+print(f"\n✅ Saved to {save_path}.model")
+print(f"   Vocab: {base_vocab} + {len(special_tokens)} special = {tokenizer.vocab_size}")
+print(f"   Special tokens: {list(special_tokens.keys())}")
 
 # %%
-print("\n=== Tokenizer Test ===")
+print("\n=== Test ===")
 test_texts = [
     "Hello, world!",
-    "This is a test of the BPE tokenizer.",
-    "The quick brown fox jumps over the lazy dog.",
+    "Once upon a time",
+    "<|im_start|>user\nHello!<|im_end|>",
 ]
-
 for text in test_texts:
     tokens = tokenizer.encode(text)
     decoded = tokenizer.decode(tokens)
-    print(f"\nOriginal: {text!r}")
-    print(f"Tokens ({len(tokens)}): {tokens[:15]}{'...' if len(tokens) > 15 else ''}")
-    print(f"Decoded: {decoded!r}")
-    print(f"Match: {'✅' if text == decoded else '❌'}")
-
-# %%
-print("\n🎉 Tokenizer training complete!")
-print(f"   Now run train-model.py to train the model.")
+    print(f"{text!r} → {len(tokens)} tokens → {decoded!r} {'✅' if text == decoded else '❌'}")

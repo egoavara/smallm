@@ -11,6 +11,7 @@ for educational purposes. It includes:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 from typing import Optional
 
 from .config import ModelConfig
@@ -75,6 +76,9 @@ class LLaMA(nn.Module):
         # Initialize weights
         self.apply(self._init_weights)
 
+        # Gradient checkpointing flag
+        self.gradient_checkpointing = False
+
     def _init_weights(self, module: nn.Module) -> None:
         """Initialize weights using standard deviation of 0.02."""
         if isinstance(module, nn.Linear):
@@ -128,7 +132,10 @@ class LLaMA(nn.Module):
 
         # Apply transformer blocks
         for layer in self.layers:
-            h = layer(h, freqs_cis, mask)
+            if self.gradient_checkpointing and self.training:
+                h = checkpoint(layer, h, freqs_cis, mask, use_reentrant=False)
+            else:
+                h = layer(h, freqs_cis, mask)
 
         # Final normalization
         h = self.norm(h)
@@ -215,3 +222,15 @@ class LLaMA(nn.Module):
     def count_parameters(self) -> int:
         """Count the number of trainable parameters."""
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    def enable_gradient_checkpointing(self, enable: bool = True) -> None:
+        """Enable or disable gradient checkpointing.
+
+        When enabled, activations are recomputed during backward pass
+        instead of being stored, significantly reducing memory usage
+        at the cost of ~20-30% slower training.
+
+        Args:
+            enable: Whether to enable gradient checkpointing
+        """
+        self.gradient_checkpointing = enable

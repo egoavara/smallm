@@ -5,10 +5,14 @@ import ipywidgets as widgets
 from IPython.display import display, clear_output
 from typing import Optional, Callable, TYPE_CHECKING
 import time
+import matplotlib.pyplot as plt
+import numpy as np
 
 if TYPE_CHECKING:
     from ..model import LLaMA
     from .checkpoint import CheckpointManager
+
+from ..data import CHATML_USER
 
 
 class TrainingUI:
@@ -30,6 +34,7 @@ class TrainingUI:
         train_step_fn: Callable[[], float],
         device: str = "cpu",
         model_size: str = "unknown",
+        amp_dtype: Optional[str] = None,
     ):
         """Initialize Training UI.
 
@@ -41,6 +46,7 @@ class TrainingUI:
             train_step_fn: Function that performs one training step and returns loss
             device: Device string
             model_size: Model size name (tiny, small, medium)
+            amp_dtype: AMP dtype string (e.g., "bfloat16", "float16") or None if disabled
         """
         self.model = model
         self.optimizer = optimizer
@@ -49,6 +55,7 @@ class TrainingUI:
         self.train_step_fn = train_step_fn
         self.device = device
         self.model_size = model_size
+        self.amp_dtype = amp_dtype
 
         self.step = 0
         self.loss_history = []
@@ -68,11 +75,17 @@ class TrainingUI:
         else:
             param_str = f"{param_count / 1_000:.1f}K"
 
-        # dtype 확인
-        dtype = next(self.model.parameters()).dtype
-        dtype_str = str(dtype).replace("torch.", "")
+        # dtype 확인 (AMP 사용 시 AMP dtype 표시)
+        if self.amp_dtype:
+            dtype_str = self.amp_dtype
+        else:
+            dtype = next(self.model.parameters()).dtype
+            dtype_str = str(dtype).replace("torch.", "")
 
         cfg = self.model.config
+        # Check optimization flags
+        grad_ckpt = "✓" if getattr(self.model, 'gradient_checkpointing', False) else "✗"
+
         model_info_html = f"""
         <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                     color: white; padding: 12px 16px; border-radius: 8px; margin-bottom: 10px;">
@@ -82,6 +95,9 @@ class TrainingUI:
             <div style="font-size: 12px; opacity: 0.9;">
                 n_layers={cfg.n_layers} | n_heads={cfg.n_heads} | n_kv_heads={cfg.n_kv_heads} |
                 d_model={cfg.d_model} | d_ff={cfg.d_ff} | vocab={cfg.vocab_size} | seq_len={cfg.max_seq_len}
+            </div>
+            <div style="font-size: 11px; opacity: 0.8; margin-top: 4px;">
+                grad_checkpointing={grad_ckpt}
             </div>
         </div>
         """
@@ -142,11 +158,11 @@ class TrainingUI:
         )
 
         # === Generation Section ===
-        self.prompt_input = widgets.Text(
+        self.prompt_input = widgets.Textarea(
             value="",
             placeholder="Enter prompt...",
             description="Prompt:",
-            layout=widgets.Layout(width="400px"),
+            layout=widgets.Layout(width="400px", height="80px"),
         )
         self.max_tokens_input = widgets.IntText(
             value=100, description="Max tokens:", layout=widgets.Layout(width="150px")
@@ -159,8 +175,15 @@ class TrainingUI:
             button_style="primary",
             layout=widgets.Layout(width="120px"),
         )
+        self.chatml_btn = widgets.Button(
+            description="💬 ChatML",
+            button_style="warning",
+            layout=widgets.Layout(width="100px"),
+            tooltip="Convert prompt to ChatML format for instruct mode",
+        )
 
         self.generate_btn.on_click(self._on_generate)
+        self.chatml_btn.on_click(self._on_chatml_convert)
 
         gen_controls = widgets.HBox(
             [
@@ -168,8 +191,30 @@ class TrainingUI:
                 self.max_tokens_input,
                 self.temperature_input,
                 self.generate_btn,
+                self.chatml_btn,
             ]
         )
+
+        # === Graph Section ===
+        self.graph_btn = widgets.Button(
+            description="📈 Show Graph",
+            button_style="info",
+            layout=widgets.Layout(width="120px"),
+        )
+        self.graph_window_input = widgets.IntText(
+            value=100,
+            description="Smooth:",
+            layout=widgets.Layout(width="120px"),
+        )
+        self.graph_output = widgets.Output(
+            layout=widgets.Layout(
+                height="350px",
+                border="1px solid #ccc",
+            )
+        )
+        self.graph_btn.on_click(self._on_show_graph)
+
+        graph_controls = widgets.HBox([self.graph_btn, self.graph_window_input])
 
         # === Output Section ===
         self.log_lines = []  # 로그 라인 저장 (최신이 앞)
@@ -206,6 +251,14 @@ class TrainingUI:
             ]
         )
 
+        graph_section = widgets.VBox(
+            [
+                widgets.HTML("<b>📈 Loss Curve</b>"),
+                graph_controls,
+                self.graph_output,
+            ]
+        )
+
         log_section = widgets.VBox(
             [
                 widgets.HTML("<b>📋 Log</b>"),
@@ -221,6 +274,8 @@ class TrainingUI:
                 checkpoint_section,
                 widgets.HTML("<hr>"),
                 gen_section,
+                widgets.HTML("<hr>"),
+                graph_section,
                 widgets.HTML("<hr>"),
                 log_section,
                 self.status_label,
@@ -370,6 +425,18 @@ class TrainingUI:
         self.stop_requested = True
         self._update_status("Stopping...")
 
+    def _on_chatml_convert(self, b):
+        """Convert current prompt to ChatML format."""
+        current_prompt = self.prompt_input.value.strip()
+        if not current_prompt:
+            self._log("❌ Enter a prompt first")
+            return
+
+        # Convert to ChatML format: <|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n
+        chatml_prompt = CHATML_USER.format(content=current_prompt) + "<|im_start|>assistant\n"
+        self.prompt_input.value = chatml_prompt
+        self._log(f"✅ Converted to ChatML format")
+
     @torch.no_grad()
     def _on_generate(self, b):
         """Handle generate button click."""
@@ -430,3 +497,58 @@ class TrainingUI:
         if loss_history is not None:
             self.loss_history = loss_history
         self._update_status(f"Step: {self.step}")
+
+    def _on_show_graph(self, b):
+        """Handle show graph button click."""
+        self.graph_output.clear_output(wait=True)
+
+        with self.graph_output:
+            if not self.loss_history:
+                print("No loss history available. Train the model first.")
+                return
+
+            window = max(1, self.graph_window_input.value)
+            losses = np.array(self.loss_history)
+            steps = np.arange(1, len(losses) + 1)
+
+            fig, ax = plt.subplots(figsize=(10, 4))
+
+            # Raw loss (faint)
+            ax.plot(steps, losses, alpha=0.3, color="blue", linewidth=0.5, label="Raw")
+
+            # Smoothed loss (moving average)
+            if len(losses) >= window:
+                smoothed = np.convolve(losses, np.ones(window) / window, mode="valid")
+                smooth_steps = steps[window - 1:]
+                ax.plot(
+                    smooth_steps,
+                    smoothed,
+                    color="blue",
+                    linewidth=2,
+                    label=f"Smoothed (window={window})",
+                )
+
+            ax.set_xlabel("Step")
+            ax.set_ylabel("Loss")
+            ax.set_title(f"Training Loss Curve (Total {len(losses)} steps)")
+            ax.legend(loc="upper right")
+            ax.grid(True, alpha=0.3)
+
+            # Show stats
+            recent = losses[-min(100, len(losses)):]
+            stats_text = (
+                f"Final: {losses[-1]:.4f} | "
+                f"Min: {losses.min():.4f} | "
+                f"Recent avg: {recent.mean():.4f}"
+            )
+            ax.text(
+                0.02, 0.98, stats_text,
+                transform=ax.transAxes,
+                fontsize=9,
+                verticalalignment="top",
+                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+            )
+
+            plt.tight_layout()
+            plt.show()
+            plt.close(fig)

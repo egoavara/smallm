@@ -128,6 +128,117 @@ class RustBPE(Tokenizer):
         for (pair_a, pair_b), new_id in self.merges.items():
             self.vocab[new_id] = self.vocab[pair_a] + self.vocab[pair_b]
 
+    def accumulate(self, text: str, verbose: bool = False) -> tuple[int, int]:
+        """Accumulate pair statistics from text.
+
+        Call this multiple times with different datasets, then call finalize().
+
+        Args:
+            text: Text to accumulate statistics from
+            verbose: Print progress info
+
+        Returns:
+            Tuple of (num_chunks, num_tokens) for this batch
+        """
+        return self._rust.accumulate(text, verbose)
+
+    def clear_stats(self) -> None:
+        """Clear accumulated statistics. Call before starting new training."""
+        self._rust.clear_stats()
+
+    def get_stats_info(self) -> tuple[int, int]:
+        """Get info about accumulated stats.
+
+        Returns:
+            Tuple of (num_unique_pairs, num_accumulated_tokens)
+        """
+        return self._rust.get_stats_info()
+
+    def finalize(self, vocab_size: int, verbose: bool = False) -> None:
+        """Finalize training using accumulated pair statistics.
+
+        Must call accumulate() at least once before this.
+
+        Args:
+            vocab_size: Target vocabulary size (must be >= 256)
+            verbose: Print progress and show progress bar
+        """
+        num_merges = vocab_size - 256
+
+        if verbose:
+            print("=" * 60)
+            print("BPE Training (Finalize)")
+            print("=" * 60)
+            num_pairs, num_tokens = self.get_stats_info()
+            print(f"  Accumulated tokens: {num_tokens:,}")
+            print(f"  Unique pairs: {num_pairs:,}")
+            print(f"  Target vocab size: {vocab_size:,}")
+            print(f"  Merges to perform: {num_merges:,}")
+            print("-" * 60)
+
+            pbar = None
+            last_step = -1
+
+            def progress_callback(event: dict) -> None:
+                nonlocal pbar, last_step
+                name = event.get("event", "")
+
+                if name == "indexing_start":
+                    print("[Phase 1/3] Building pair position index...")
+
+                elif name == "indexing_done":
+                    print(f"  -> Unique pairs: {event['num_pairs']:,}")
+
+                elif name == "heap_built":
+                    print("[Phase 2/3] Building priority queue...")
+                    print(f"  -> Heap size: {event['heap_size']:,}")
+
+                elif name == "training_start":
+                    print("[Phase 3/3] Training merges...")
+                    print("-" * 60)
+                    pbar = tqdm(total=event["num_merges"], desc="Merging", unit="merge")
+
+                elif name == "merge":
+                    if pbar is not None:
+                        step = event["step"]
+                        pbar.update(step - last_step)
+                        last_step = step
+
+                        token = event["token"]
+                        display = repr(token[:15] + "..." if len(token) > 15 else token)
+                        pbar.set_postfix_str(
+                            f"id={event['new_id']}, "
+                            f"pair={event['pair']}, "
+                            f"token={display}, "
+                            f"count={event['count']:,}"
+                        )
+
+                elif name == "no_more_pairs":
+                    if pbar is not None:
+                        pbar.close()
+                    print(f"\n  [!] No more pairs to merge at step {event['step']}")
+
+                elif name == "training_done":
+                    if pbar is not None:
+                        pbar.update(num_merges - last_step - 1)
+                        pbar.close()
+                    print("-" * 60)
+                    print("Training Complete!")
+                    print(f"  Final vocab size: {event['vocab_size']:,}")
+                    print("=" * 60)
+
+            self._rust.finalize(vocab_size, False, progress_callback)
+        else:
+            self._rust.finalize(vocab_size, False, None)
+
+        # Sync merges back to Python
+        self.merges = {tuple(pair): new_id for pair, new_id in self._rust.get_merges()}
+
+        # Rebuild vocab
+        self.vocab = {idx: bytes([idx]) for idx in range(256)}
+        for (pair_a, pair_b), new_id in self.merges.items():
+            self.vocab[new_id] = self.vocab[pair_a] + self.vocab[pair_b]
+
     def encode(self, text: str) -> list[int]:
         """Encode text to token IDs."""
         return self._rust.encode(text)

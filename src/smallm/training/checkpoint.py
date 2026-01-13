@@ -1,9 +1,11 @@
 """Checkpoint management utilities."""
 
 import re
+import json
 import torch
 from pathlib import Path
 from typing import List, Tuple, Optional
+from datetime import datetime
 
 
 class CheckpointManager:
@@ -26,6 +28,33 @@ class CheckpointManager:
     def get_best_path(self) -> Path:
         """best.pt 경로 반환."""
         return self.checkpoint_dir / "best.pt"
+
+    def get_loss_history_path(self) -> Path:
+        """loss_history.json 경로 반환."""
+        return self.checkpoint_dir / "loss_history.json"
+
+    def save_loss_history(self, loss_history: list, step: int):
+        """Loss 히스토리를 별도 JSON 파일로 저장."""
+        history_path = self.get_loss_history_path()
+
+        data = {
+            "updated_at": datetime.now().isoformat(),
+            "total_steps": step,
+            "total_entries": len(loss_history),
+            "losses": loss_history,
+        }
+
+        with open(history_path, "w") as f:
+            json.dump(data, f, indent=2)
+
+    def load_loss_history(self) -> Tuple[list, Optional[int]]:
+        """Loss 히스토리 JSON 파일 로드. (losses, total_steps) 반환."""
+        history_path = self.get_loss_history_path()
+        if history_path.exists():
+            with open(history_path, "r") as f:
+                data = json.load(f)
+            return data.get("losses", []), data.get("total_steps")
+        return [], None
 
     def get_checkpoint_path(self, step: int, loss: float) -> Path:
         """체크포인트 파일 경로 생성 (step과 loss 포함)."""
@@ -100,6 +129,9 @@ class CheckpointManager:
 
         # 오래된 체크포인트 정리
         self.cleanup_old_checkpoints()
+
+        # Loss 히스토리 별도 JSON 파일로 저장
+        self.save_loss_history(loss_history, step)
 
         return ", ".join(saved_paths)
 
