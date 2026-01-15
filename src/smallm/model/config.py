@@ -52,13 +52,21 @@ class ModelConfig:
 # Preset configurations
 # vocab_size는 토크나이저에서 가져옴 (train-model.py에서 설정)
 CONFIGS = {
+    "tiny": ModelConfig(
+        n_layers=4,
+        n_heads=4,
+        n_kv_heads=2,
+        d_model=256,
+        d_ff=688,
+        max_seq_len=512,
+    ),
     "small": ModelConfig(
         n_layers=8,
         n_heads=8,
         n_kv_heads=4,
         d_model=512,
         d_ff=1376,
-        max_seq_len=512,
+        max_seq_len=1024,
     ),
     "medium": ModelConfig(
         n_layers=12,
@@ -66,7 +74,7 @@ CONFIGS = {
         n_kv_heads=4,
         d_model=768,
         d_ff=2048,
-        max_seq_len=1024,
+        max_seq_len=2048,
     ),
     "large": ModelConfig(
         n_layers=24,
@@ -74,6 +82,6 @@ CONFIGS = {
         n_kv_heads=8,
         d_model=1024,
         d_ff=4096,
-        max_seq_len=2048,
+        max_seq_len=4096,
     ),
 }

@@ -60,26 +60,42 @@ class ChatUI:
 
     def _build_ui(self):
         param_count = self.model.count_parameters()
-        param_str = f"{param_count/1e9:.1f}B" if param_count >= 1e9 else f"{param_count/1e6:.1f}M"
+        param_str = (
+            f"{param_count/1e9:.1f}B"
+            if param_count >= 1e9
+            else f"{param_count/1e6:.1f}M"
+        )
         dtype_str = str(next(self.model.parameters()).dtype).replace("torch.", "")
         cfg = self.model.config
 
-        self.model_info = widgets.HTML(f"""
+        self.model_info = widgets.HTML(
+            f"""
         <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                     color: white; padding: 12px; border-radius: 8px; margin-bottom: 10px;">
             <b>💬 Chat Mode - {self.model_size.upper()}</b> ({param_str}, {dtype_str})<br>
             <small>layers={cfg.n_layers} heads={cfg.n_heads} d_model={cfg.d_model}</small>
         </div>
-        """)
+        """
+        )
 
         # Checkpoint 관련
-        self.checkpoint_dropdown = widgets.Dropdown(options=[], description="Checkpoint:", layout=widgets.Layout(width="350px"))
-        self.load_btn = widgets.Button(description="Load", button_style="info", layout=widgets.Layout(width="100px"))
-        self.refresh_btn = widgets.Button(description="Refresh", layout=widgets.Layout(width="80px"))
+        self.checkpoint_dropdown = widgets.Dropdown(
+            options=[], description="Checkpoint:", layout=widgets.Layout(width="350px")
+        )
+        self.load_btn = widgets.Button(
+            description="Load",
+            button_style="info",
+            layout=widgets.Layout(width="100px"),
+        )
+        self.refresh_btn = widgets.Button(
+            description="Refresh", layout=widgets.Layout(width="80px")
+        )
         self.load_btn.on_click(self._on_load_checkpoint)
         self.refresh_btn.on_click(self._on_refresh_checkpoints)
 
-        self.auto_reload_checkbox = widgets.Checkbox(value=False, description="Auto-reload best.pt")
+        self.auto_reload_checkbox = widgets.Checkbox(
+            value=False, description="Auto-reload best.pt"
+        )
         self.auto_reload_status = widgets.HTML("<span style='color:gray'>OFF</span>")
         self.auto_reload_checkbox.observe(self._on_auto_reload_toggle, names="value")
 
@@ -109,33 +125,53 @@ class ChatUI:
             placeholder="Type your message...",
             layout=widgets.Layout(width="500px", height="60px"),
         )
-        self.send_btn = widgets.Button(description="Send", button_style="primary", layout=widgets.Layout(width="80px"))
+        self.send_btn = widgets.Button(
+            description="Send",
+            button_style="primary",
+            layout=widgets.Layout(width="80px"),
+        )
         self.send_btn.on_click(self._on_send)
 
         # 생성 파라미터
-        self.max_tokens_input = widgets.IntText(value=100, description="Max tokens:", layout=widgets.Layout(width="150px"))
-        self.temperature_input = widgets.FloatText(value=0.8, description="Temp:", layout=widgets.Layout(width="150px"))
-        self.top_k_input = widgets.IntText(value=50, description="Top-K:", layout=widgets.Layout(width="150px"))
+        self.max_tokens_input = widgets.IntText(
+            value=100, description="Max tokens:", layout=widgets.Layout(width="150px")
+        )
+        self.temperature_input = widgets.FloatText(
+            value=0.8, description="Temp:", layout=widgets.Layout(width="150px")
+        )
+        self.top_k_input = widgets.IntText(
+            value=50, description="Top-K:", layout=widgets.Layout(width="150px")
+        )
 
         # 대화 제어
-        self.clear_btn = widgets.Button(description="Clear Chat", button_style="warning", layout=widgets.Layout(width="100px"))
+        self.clear_btn = widgets.Button(
+            description="Clear Chat",
+            button_style="warning",
+            layout=widgets.Layout(width="100px"),
+        )
         self.clear_btn.on_click(self._on_clear_chat)
 
         self.status_label = widgets.Label(value="Ready")
 
-        self.ui = widgets.VBox([
-            self.model_info,
-            widgets.HTML("<b>Checkpoint</b>"),
-            widgets.HBox([self.checkpoint_dropdown, self.load_btn, self.refresh_btn]),
-            widgets.HBox([self.auto_reload_checkbox, self.auto_reload_status]),
-            widgets.HTML("<hr><b>System Prompt</b>"),
-            self.system_input,
-            widgets.HTML("<hr><b>Chat</b>"),
-            self.chat_display,
-            widgets.HBox([self.user_input, self.send_btn, self.clear_btn]),
-            widgets.HBox([self.max_tokens_input, self.temperature_input, self.top_k_input]),
-            self.status_label,
-        ])
+        self.ui = widgets.VBox(
+            [
+                self.model_info,
+                widgets.HTML("<b>Checkpoint</b>"),
+                widgets.HBox(
+                    [self.checkpoint_dropdown, self.load_btn, self.refresh_btn]
+                ),
+                widgets.HBox([self.auto_reload_checkbox, self.auto_reload_status]),
+                widgets.HTML("<hr><b>System Prompt</b>"),
+                self.system_input,
+                widgets.HTML("<hr><b>Chat</b>"),
+                self.chat_display,
+                widgets.HBox([self.user_input, self.send_btn, self.clear_btn]),
+                widgets.HBox(
+                    [self.max_tokens_input, self.temperature_input, self.top_k_input]
+                ),
+                self.status_label,
+            ]
+        )
         self._refresh_checkpoints()
 
     def _render_chat(self) -> str:
@@ -202,7 +238,9 @@ class ChatUI:
                     self.step, self.loss_history = result[0], result[1]
                     self._update_status(f"Loaded best.pt (step {self.step})")
             else:
-                self.step, self.loss_history = self.checkpoint_manager.load_checkpoint(selected, self.model, None)
+                self.step, self.loss_history = self.checkpoint_manager.load_checkpoint(
+                    selected, self.model, None
+                )
                 self._update_status(f"Loaded (step {self.step})")
         except Exception as e:
             self._update_status(f"Error: {e}")
@@ -219,7 +257,9 @@ class ChatUI:
         self._stop_reload_thread = False
         best_path = self.checkpoint_manager.checkpoint_dir / "best.pt"
         self._last_mtime = best_path.stat().st_mtime if best_path.exists() else None
-        self._reload_thread = threading.Thread(target=self._auto_reload_loop, daemon=True)
+        self._reload_thread = threading.Thread(
+            target=self._auto_reload_loop, daemon=True
+        )
         self._reload_thread.start()
         self.auto_reload_status.value = "<span style='color:green'>ON</span>"
 
@@ -299,7 +339,10 @@ class ChatUI:
                 generated_tokens.append(next_token.item())
 
                 # EOS 체크
-                if hasattr(self.tokenizer, "eos_id") and next_token.item() == self.tokenizer.eos_id:
+                if (
+                    hasattr(self.tokenizer, "eos_id")
+                    and next_token.item() == self.tokenizer.eos_id
+                ):
                     break
 
                 # <|im_end|> 체크 - 디코딩해서 확인
@@ -323,7 +366,10 @@ class ChatUI:
         except Exception as e:
             self._update_status(f"Error: {e}")
             # 에러 발생 시 마지막 사용자 메시지 제거
-            if self.conversation_history and self.conversation_history[-1]["role"] == "user":
+            if (
+                self.conversation_history
+                and self.conversation_history[-1]["role"] == "user"
+            ):
                 self.conversation_history.pop()
                 self._update_chat_display()
 
@@ -362,7 +408,9 @@ def setup_model():
     model_config.max_seq_len = config.seq_len
 
     model = LLaMA(model_config).to(config.device)
-    print(f"\n📦 Model: {config.mode}/{config.model_size} ({model.count_parameters():,} params)")
+    print(
+        f"\n📦 Model: {config.mode}/{config.model_size} ({model.count_parameters():,} params)"
+    )
 
     checkpoint_dir = f"{config.checkpoint_dir}/{config.mode}/{config.model_size}"
     state.checkpoint_manager = CheckpointManager(
@@ -384,6 +432,7 @@ def setup_model():
 
 # %% [markdown]
 # ## 2. Chat UI
+
 
 # %%
 def create_chat_ui():
@@ -466,6 +515,7 @@ def create_chat_ui():
             except Exception as e:
                 print(f"❌ Error: {e}")
                 import traceback
+
                 traceback.print_exc()
             finally:
                 setup_btn.disabled = False
@@ -476,16 +526,18 @@ def create_chat_ui():
     update_config_info()
 
     # 전체 UI 구성
-    ui = widgets.VBox([
-        widgets.HTML("<h3>1. Select Configuration</h3>"),
-        widgets.HBox([mode_dropdown, model_dropdown]),
-        config_info,
-        widgets.HTML("<br>"),
-        setup_btn,
-        setup_output,
-        widgets.HTML("<h3>2. Chat</h3>"),
-        chat_container,
-    ])
+    ui = widgets.VBox(
+        [
+            widgets.HTML("<h3>1. Select Configuration</h3>"),
+            widgets.HBox([mode_dropdown, model_dropdown]),
+            config_info,
+            widgets.HTML("<br>"),
+            setup_btn,
+            setup_output,
+            widgets.HTML("<h3>2. Chat</h3>"),
+            chat_container,
+        ]
+    )
 
     display(ui)
 

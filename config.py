@@ -33,22 +33,22 @@ CHATML_SPECIAL_TOKENS = ("<|im_start|>", "<|im_end|>")
 
 MODELS = {
     "tiny": ModelPreset(
-        seq_len=256,
+        seq_len=512,
         batch_size=32,
         gradient_accumulation_steps=1,
     ),
     "small": ModelPreset(
-        seq_len=256,
+        seq_len=1024,
         batch_size=16,
         gradient_accumulation_steps=2,
     ),
     "medium": ModelPreset(
-        seq_len=256,
+        seq_len=2048,
         batch_size=8,
         gradient_accumulation_steps=4,
     ),
     "large": ModelPreset(
-        seq_len=256,
+        seq_len=4096,
         batch_size=8,
         gradient_accumulation_steps=4,
     ),
@@ -57,11 +57,13 @@ MODELS = {
 MODES = {
     "base": ModePreset(
         streaming=True,
-        datasets=("wikitext", "tinystories", "openwebtext"),
+        datasets=("tinystories",),  # 임시: tinystories만 사용
+        # datasets=("wikitext", "tinystories", "openwebtext"),  # 원본
     ),
     "instruct": ModePreset(
         streaming=True,
-        datasets=("openassistant", "alpaca", "dolly", "ultrachat"),
+        datasets=("openassistant",),  # 임시: openassistant만 사용 (~34M tokens)
+        # datasets=("openassistant", "alpaca", "dolly", "ultrachat"),  # 원본
     ),
 }
 
@@ -186,9 +188,11 @@ class Config:
         return RustBPE
 
     # 학습 상수
-    vocab_size: int = 4096
+    vocab_size: int = 32000
     learning_rate: float = 3e-4
     weight_decay: float = 0.1
+    beta1: float = 0.9
+    beta2: float = 0.95  # LLaMA 스타일 (기본 0.999 → 0.95)
     max_grad_norm: float = 1.0
     use_amp: bool = True
     amp_dtype: str = "bfloat16"
@@ -196,6 +200,11 @@ class Config:
     max_checkpoints: int = 5
     save_best: bool = True
     auto_load_best: bool = True
+
+    # LR Scheduler 설정
+    warmup_steps: int = 1000  # warmup 스텝 수
+    min_lr: float = 1e-5  # 최소 learning rate
+    lr_decay_steps: int = 100000  # LR decay 총 스텝 (warmup 제외)
 
 
 config = Config()

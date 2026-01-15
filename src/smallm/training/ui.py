@@ -35,6 +35,7 @@ class TrainingUI:
         device: str = "cpu",
         model_size: str = "unknown",
         amp_dtype: Optional[str] = None,
+        scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
     ):
         """Initialize Training UI.
 
@@ -47,9 +48,11 @@ class TrainingUI:
             device: Device string
             model_size: Model size name (tiny, small, medium)
             amp_dtype: AMP dtype string (e.g., "bfloat16", "float16") or None if disabled
+            scheduler: Optional LR scheduler instance
         """
         self.model = model
         self.optimizer = optimizer
+        self.scheduler = scheduler
         self.checkpoint_manager = checkpoint_manager
         self.tokenizer = tokenizer
         self.train_step_fn = train_step_fn
@@ -204,7 +207,24 @@ class TrainingUI:
         self.graph_window_input = widgets.IntText(
             value=100,
             description="Smooth:",
-            layout=widgets.Layout(width="120px"),
+            layout=widgets.Layout(width="150px"),
+        )
+        self.graph_recent_input = widgets.Text(
+            value="",
+            description="Recent:",
+            placeholder="all",
+            layout=widgets.Layout(width="150px"),
+        )
+        self.graph_scale_dropdown = widgets.Dropdown(
+            options=[("Linear", "linear"), ("Square", "square"), ("Log", "log")],
+            value="linear",
+            description="Scale:",
+            layout=widgets.Layout(width="130px"),
+        )
+        self.graph_percentile_input = widgets.IntText(
+            value=5,
+            description="Percentile:",
+            layout=widgets.Layout(width="130px"),
         )
         self.graph_output = widgets.Output(
             layout=widgets.Layout(
@@ -214,7 +234,7 @@ class TrainingUI:
         )
         self.graph_btn.on_click(self._on_show_graph)
 
-        graph_controls = widgets.HBox([self.graph_btn, self.graph_window_input])
+        graph_controls = widgets.HBox([self.graph_btn, self.graph_window_input, self.graph_recent_input, self.graph_scale_dropdown, self.graph_percentile_input])
 
         # === Output Section ===
         self.log_lines = []  # 로그 라인 저장 (최신이 앞)
@@ -337,17 +357,25 @@ class TrainingUI:
 
         try:
             if selected == "best":
-                result = self.checkpoint_manager.load_best(self.model, self.optimizer)
+                result = self.checkpoint_manager.load_best(
+                    self.model, self.optimizer, self.scheduler
+                )
                 if result[0] is not None:
                     self.step = result[0]
                     self.loss_history = result[1]
+                    # Scheduler를 현재 step으로 동기화 (기존 checkpoint에 scheduler state가 없는 경우)
+                    if self.scheduler is not None:
+                        self.scheduler.last_epoch = self.step
                     self._log(f"✅ Loaded best.pt (step: {self.step})")
                 else:
                     self._log("❌ best.pt not found")
             else:
                 self.step, self.loss_history = self.checkpoint_manager.load_checkpoint(
-                    selected, self.model, self.optimizer
+                    selected, self.model, self.optimizer, self.scheduler
                 )
+                # Scheduler를 현재 step으로 동기화
+                if self.scheduler is not None:
+                    self.scheduler.last_epoch = self.step
                 self._log(f"✅ Loaded checkpoint (step: {self.step})")
 
             self._update_status(f"Step: {self.step}")
@@ -403,6 +431,7 @@ class TrainingUI:
                         model=self.model,
                         optimizer=self.optimizer,
                         loss_history=self.loss_history,
+                        scheduler=self.scheduler,
                     )
                     self._log(f"   💾 Saved: {saved}")
                     self._refresh_checkpoints()
@@ -508,8 +537,29 @@ class TrainingUI:
                 return
 
             window = max(1, self.graph_window_input.value)
-            losses = np.array(self.loss_history)
-            steps = np.arange(1, len(losses) + 1)
+
+            # Parse recent value (empty or non-numeric = all, numeric = last n)
+            recent_str = self.graph_recent_input.value.strip()
+            if recent_str and recent_str.isdigit() and int(recent_str) > 0:
+                recent_n = int(recent_str)
+                losses_raw = np.array(self.loss_history[-recent_n:])
+                start_step = max(1, len(self.loss_history) - recent_n + 1)
+                steps = np.arange(start_step, start_step + len(losses_raw))
+            else:
+                losses_raw = np.array(self.loss_history)
+                steps = np.arange(1, len(losses_raw) + 1)
+
+            # Apply scale transformation to loss values
+            scale_type = self.graph_scale_dropdown.value
+            if scale_type == "square":
+                losses = np.square(losses_raw)
+                y_label = "Loss²"
+            elif scale_type == "log":
+                losses = np.log(np.maximum(losses_raw, 1e-8))
+                y_label = "log(Loss)"
+            else:
+                losses = losses_raw
+                y_label = "Loss"
 
             fig, ax = plt.subplots(figsize=(10, 4))
 
@@ -529,17 +579,28 @@ class TrainingUI:
                 )
 
             ax.set_xlabel("Step")
-            ax.set_ylabel("Loss")
-            ax.set_title(f"Training Loss Curve (Total {len(losses)} steps)")
+            ax.set_ylabel(y_label)
+            total_steps = len(self.loss_history)
+            if recent_str and recent_str.isdigit() and int(recent_str) > 0:
+                ax.set_title(f"Training Loss Curve (Recent {len(losses)} of {total_steps} steps)")
+            else:
+                ax.set_title(f"Training Loss Curve (Total {total_steps} steps)")
             ax.legend(loc="upper right")
             ax.grid(True, alpha=0.3)
 
-            # Show stats
-            recent = losses[-min(100, len(losses)):]
+            # Set Y-axis range based on percentiles
+            pct = max(0, min(49, self.graph_percentile_input.value))
+            y_min = np.percentile(losses, pct)
+            y_max = np.percentile(losses, 100 - pct)
+            y_margin = (y_max - y_min) * 0.1
+            ax.set_ylim(y_min - y_margin, y_max + y_margin)
+
+            # Show stats (always show original loss values)
+            recent_raw = losses_raw[-min(100, len(losses_raw)):]
             stats_text = (
-                f"Final: {losses[-1]:.4f} | "
-                f"Min: {losses.min():.4f} | "
-                f"Recent avg: {recent.mean():.4f}"
+                f"Final: {losses_raw[-1]:.4f} | "
+                f"Min: {losses_raw.min():.4f} | "
+                f"Recent avg: {recent_raw.mean():.4f}"
             )
             ax.text(
                 0.02, 0.98, stats_text,

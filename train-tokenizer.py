@@ -46,7 +46,9 @@ for text in iter_texts(all_datasets, sample_ratio=SAMPLE_RATIO):
         gc.collect()
 
         num_pairs, total_tok = tokenizer.get_stats_info()
-        print(f"  Accumulated: {total_chunks:,} chunks, {total_tokens:,} tokens, {num_pairs:,} pairs")
+        print(
+            f"  Accumulated: {total_chunks:,} chunks, {total_tokens:,} tokens, {num_pairs:,} pairs"
+        )
 
 if texts:
     chunk_text = "\n".join(texts)
@@ -57,7 +59,9 @@ if texts:
     gc.collect()
 
 num_pairs, total_tok = tokenizer.get_stats_info()
-print(f"\n✅ Total: {total_chunks:,} chunks, {total_tokens:,} tokens, {num_pairs:,} pairs")
+print(
+    f"\n✅ Total: {total_chunks:,} chunks, {total_tokens:,} tokens, {num_pairs:,} pairs"
+)
 
 # %%
 print(f"\n{'=' * 50}")
@@ -85,7 +89,9 @@ save_path = output_dir / BPETokenizer.__name__
 tokenizer.save(str(save_path))
 
 print(f"\n✅ Saved to {save_path}.model")
-print(f"   Vocab: {base_vocab} + {len(special_tokens)} special = {tokenizer.vocab_size}")
+print(
+    f"   Vocab: {base_vocab} + {len(special_tokens)} special = {tokenizer.vocab_size}"
+)
 print(f"   Special tokens: {list(special_tokens.keys())}")
 
 # %%
@@ -98,4 +104,6 @@ test_texts = [
 for text in test_texts:
     tokens = tokenizer.encode(text)
     decoded = tokenizer.decode(tokens)
-    print(f"{text!r} → {len(tokens)} tokens → {decoded!r} {'✅' if text == decoded else '❌'}")
+    print(
+        f"{text!r} → {len(tokens)} tokens → {decoded!r} {'✅' if text == decoded else '❌'}"
+    )

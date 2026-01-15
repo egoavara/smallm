@@ -94,6 +94,7 @@ class CheckpointManager:
         model: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
         loss_history: list,
+        scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
     ) -> str:
         """체크포인트 저장 및 관리."""
         checkpoint = {
@@ -112,6 +113,10 @@ class CheckpointManager:
                 "max_seq_len": model.config.max_seq_len,
             },
         }
+
+        # Scheduler state 저장 (있으면)
+        if scheduler is not None:
+            checkpoint["scheduler_state_dict"] = scheduler.state_dict()
 
         saved_paths = []
 
@@ -136,7 +141,10 @@ class CheckpointManager:
         return ", ".join(saved_paths)
 
     def load_best(
-        self, model: torch.nn.Module, optimizer: Optional[torch.optim.Optimizer] = None
+        self,
+        model: torch.nn.Module,
+        optimizer: Optional[torch.optim.Optimizer] = None,
+        scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
     ) -> Tuple[Optional[int], list]:
         """best.pt 로드. 성공 시 (step, loss_history) 반환, 없으면 (None, [])."""
         best_path = self.get_best_path()
@@ -145,6 +153,10 @@ class CheckpointManager:
             model.load_state_dict(checkpoint["model_state_dict"])
             if optimizer is not None:
                 optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            # Scheduler state 로드 (있으면)
+            if scheduler is not None and "scheduler_state_dict" in checkpoint:
+                scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+                print(f"   Scheduler state restored")
             step = checkpoint["step"]
             loss = checkpoint.get("loss", float("inf"))
             self.best_loss = loss
@@ -153,13 +165,20 @@ class CheckpointManager:
         return None, []
 
     def load_checkpoint(
-        self, path: str, model: torch.nn.Module, optimizer: Optional[torch.optim.Optimizer] = None
+        self,
+        path: str,
+        model: torch.nn.Module,
+        optimizer: Optional[torch.optim.Optimizer] = None,
+        scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
     ) -> Tuple[int, list]:
         """특정 체크포인트 로드."""
         checkpoint = torch.load(path, map_location=self.device)
         model.load_state_dict(checkpoint["model_state_dict"])
         if optimizer is not None:
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        # Scheduler state 로드 (있으면)
+        if scheduler is not None and "scheduler_state_dict" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         step = checkpoint["step"]
         loss = checkpoint.get("loss", float("inf"))
         if loss < self.best_loss:

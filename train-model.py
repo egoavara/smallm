@@ -6,11 +6,13 @@
 
 # %%
 import torch
+import math
 import time
 import ipywidgets as widgets
 from pathlib import Path
 from typing import Optional
 from IPython.display import display, clear_output
+from torch.optim.lr_scheduler import LambdaLR
 
 from config import config, MODELS, MODES
 from smallm.model import LLaMA, CONFIGS
@@ -38,10 +40,36 @@ print(f"✅ Tokenizer loaded (vocab: {tokenizer.vocab_size})")
 
 
 # %%
+def create_lr_scheduler(optimizer, warmup_steps: int, decay_steps: int, min_lr: float, base_lr: float):
+    """Warmup + Cosine Annealing LR Scheduler 생성.
+
+    Args:
+        optimizer: optimizer
+        warmup_steps: warmup 스텝 수
+        decay_steps: cosine decay 스텝 수 (warmup 이후)
+        min_lr: 최소 learning rate
+        base_lr: 기본 learning rate (warmup 목표)
+    """
+    def lr_lambda(current_step: int) -> float:
+        if current_step < warmup_steps:
+            # Linear warmup: 0 -> 1
+            return float(current_step) / float(max(1, warmup_steps))
+        else:
+            # Cosine annealing: base_lr -> min_lr
+            progress = float(current_step - warmup_steps) / float(max(1, decay_steps))
+            progress = min(1.0, progress)  # clamp to [0, 1]
+            cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+            # Scale from min_lr/base_lr to 1.0
+            return max(min_lr / base_lr, cosine_decay)
+
+    return LambdaLR(optimizer, lr_lambda)
+
+
 class TrainingState:
     def __init__(self):
         self.model: Optional[LLaMA] = None
         self.optimizer: Optional[torch.optim.AdamW] = None
+        self.scheduler: Optional[LambdaLR] = None
         self.train_loader = None
         self.train_iter = None
         self.checkpoint_manager: Optional[CheckpointManager] = None
@@ -72,12 +100,19 @@ class TrainingState:
             model=self.model,
             optimizer=self.optimizer,
             loss_history=self.loss_history,
+            scheduler=self.scheduler,
         )
 
     def load_best_checkpoint(self) -> bool:
-        result = self.checkpoint_manager.load_best(self.model, self.optimizer)
+        result = self.checkpoint_manager.load_best(
+            self.model, self.optimizer, self.scheduler
+        )
         if result[0] is not None:
             self.step, self.loss_history = result[0], result[1]
+            # Scheduler를 현재 step으로 동기화 (기존 checkpoint에 scheduler state가 없는 경우)
+            if self.scheduler is not None:
+                # scheduler의 last_epoch을 step으로 설정
+                self.scheduler.last_epoch = self.step
             return True
         return False
 
@@ -108,8 +143,21 @@ def setup_model():
 
     state.model = model
     state.optimizer = torch.optim.AdamW(
-        model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
+        model.parameters(),
+        lr=config.learning_rate,
+        betas=(config.beta1, config.beta2),
+        weight_decay=config.weight_decay,
     )
+
+    # LR Scheduler 생성
+    state.scheduler = create_lr_scheduler(
+        optimizer=state.optimizer,
+        warmup_steps=config.warmup_steps,
+        decay_steps=config.lr_decay_steps,
+        min_lr=config.min_lr,
+        base_lr=config.learning_rate,
+    )
+    print(f"   LR Schedule: warmup {config.warmup_steps} → cosine decay to {config.min_lr}")
 
     if config.use_amp:
         state.amp_dtype = getattr(torch, config.amp_dtype)
@@ -202,6 +250,10 @@ def train_step() -> float:
                 state.model.parameters(), config.max_grad_norm
             )
             state.optimizer.step()
+
+        # LR Scheduler step
+        if state.scheduler is not None:
+            state.scheduler.step()
 
         state.optimizer.zero_grad()
         state.accumulation_step = 0
@@ -378,6 +430,10 @@ def create_training_ui():
                             )
                             state.optimizer.step()
 
+                        # LR Scheduler step
+                        if state.scheduler is not None:
+                            state.scheduler.step()
+
                         state.optimizer.zero_grad()
                         state.accumulation_step = 0
 
@@ -391,6 +447,7 @@ def create_training_ui():
                     train_step_fn=ui_train_step,
                     device=config.device,
                     model_size=config.model_size,
+                    scheduler=state.scheduler,
                 )
 
                 if state.step > 0:

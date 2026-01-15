@@ -1,13 +1,73 @@
 # SmallM
 
-Small language model training project with custom BPE tokenizer.
+Smallm 은 학습 목적으로 LLM의 동작 원리를 파악하기 위해 직접 만들어본 모델로, 간단한 버전의 llama3 기반 모델입니다.
 
-## Hugging Face
+- Hugging Face : https://huggingface.co/egoavara/smallm
 
-https://huggingface.co/egoavara/smallm
+## 기능/특징
 
-## Features
+### 모델 아키텍처 (LLaMA 스타일)
+- **RoPE (Rotary Position Embeddings)** - 회전 위치 임베딩으로 상대적 위치 정보 인코딩
+- **GQA (Grouped Query Attention)** - 다중 쿼리 헤드가 KV 헤드를 공유하여 메모리 효율성 향상
+- **SwiGLU FFN** - Swish + Gated Linear Unit 활성화 함수 (d_ff = 2/3 × 4 × d_model)
+- **RMSNorm** - LayerNorm 대신 Root Mean Square 정규화 사용 (연산 효율성 향상)
 
-- BPE tokenizer (Rust/Python implementation)
-- Model training pipeline
-- Hugging Face upload/download support
+### 학습 (Training)
+- **AdamW Optimizer** - weight decay를 분리한 옵티마이저 (β1=0.9, β2=0.95)
+- **Warmup + Cosine Annealing LR Scheduler** - 선형 워밍업 후 코사인 감쇠
+- **Mixed Precision Training (AMP)** - bfloat16/float16 혼합 정밀도 학습
+- **Gradient Checkpointing** - 활성화 재계산으로 메모리 사용량 감소
+- **Gradient Accumulation** - 작은 배치로 큰 배치 효과 달성
+- **Gradient Clipping** - max_grad_norm=1.0으로 그래디언트 폭발 방지
+- **Streaming Dataset** - 대용량 데이터셋 스트리밍 로딩
+
+### 토크나이저
+- **Rust 기반 BPE (Byte Pair Encoding)** - 고속 토큰화
+- **ChatML 형식** - `<|im_start|>`, `<|im_end|>` 특수 토큰으로 대화형 학습 지원
+
+### 기타
+- **Hugging Face Hub 통합** - 모델/토크나이저 업로드/다운로드
+- **Jupyter UI** - 대화형 학습 인터페이스
+- **체크포인트 관리** - 자동 저장, 최고 성능 모델 추적
+
+## 모델을 만들면서 알게 된 점
+
+- base/instruct 모델의 차이점
+    - huggingface에 올라오는 오픈소스 모델들을 보면, base, instruct가 있는데 이게 무슨 차이인가?
+    - 궁금했는데 이번에 학습을 시켜보며 확실히 알게 됨, base = 기초지식, instruct = 대화지식
+    - AI 학습에 사용되는 데이터 대부분은 대화가 아니기에 base 모델은 일반 작문 데이터만 학습해서 결국 소설가와 같이 데이터를 출력
+    - base 모델로 기초적인 문법 구조를 학습하면 대화 데이터를 학습 데이터로 instruct 모델을 튜닝, 소설가에서 달변가로 클래스 체인지
+- GPU 메모리가 신이다. 
+    - 시스템 메모리를 vram 대신 쓸 수 있는 방법이 있기는 한데 이걸 쓰면 PCIE 속도도 충분하지 못하다는걸 실감할 수 있다. (학습 한번하는데 엄청난 시간이 낭비됨)
+    - 38M 모델도 학습시키려면 수 GB vram 이 낭비된다. 
+    - float16을 써야하는 상황을 처음 봤다.
+- AI 학습에서는 진짜 설정값의 아주 사소한 차이도 수렴을 방해할 수 있다.
+    - 초기 학습에서 LR Scheduler 없이 학습했는데 (1e-4) 학습 수렴 속도가 많이 느림, 특히 2만회 반복이 넘어가면 그때부터는 loss 감소율이 현격히 감소
+    - LR Scheduler 도입하니 훨씬더 빠르게 학습되고, 루프가 쌓여도 loss가 요동치는 현상이 사라짐
+- 로컬 SSD 에 데이터셋을 저장하는 것도 일이다. 
+    - 게임설치파일 다 날렸음
+    - docker 캐싱된 레이어 파일 용량이 매우 크다
+    - 각종 컴파일러의 캐시도 용량이 크다
+    - .git 폴더는 생각보다 용량이 크다.
+- 모델은 생각보다 안어렵다 
+    - 어디까지나 ***생각보단*** 안어렵다. (어렵다)
+    - 컨텍스트 길이가 길어질수록 패러미터 수도 기하급수적으로 는다.
+    - 진짜 AI 는 금쪽이 그 자체다, 문제 해결하면 다음 문제가 나타나고... 산 넘어 산이다.
+- AI 의 학습 이라는 건 진짜 생각보다도 훨씬 계산 직약적
+    - GPU 로드 중간중간에 쉬는 시간낭비 구간이 있음
+    - GPU 를 100% 계속 로드시키면 GPU 온도가 관리가 안됨, 데스크톱 옆판을 열어도 100%로 GPU를 로드시키니 부담이 너무 커서 그냥 버그를 고치지 않음 
+      (쉬지 않고 작업시키면 83도 까지 올라감, 현재는 평균적으로 64도 정도 유지중)
+- 학습 데이터는 생각보다 다루기 어렵다
+    - 학습 데이터셋을 인터넷에서 다운로드 받는 것도 일이다. (데이터셋 하나가 24GB인 경우도 있음)
+    - 학습 데이터를 통째로 메모리에 로드하는 건 불가능하다. (DMA가 이래서 필요하구나)
+- 모델의 특이점
+    - Transformer 구조에서는 토큰의 순서를 모델이 알 수 없어 RoPE와 같은 위치 임베딩 방식이 필요하다.
+    - 모델을 한번 실행할 때 Batch 라는 개념이 있어 한 단계 모델 실행시에 하나의 유저의 입력을 처리하는 것이 아니라 여러 유저의 문장을 한번에 계산할 수 있다.
+    - 별게 다있음 RMSNorm, RoPE, GQA, SwiGLU
+    - 하지만 생각보다 (비교적) 최신 모델들도 옛날 transformer 구조에서 크게 다르지는 않다. (당연하지만)
+- 그외 배운 것
+    - 전기요금은 생각보다 비싸다
+    - 하지만 난방비용은 아낄 수 있다
+    - 집이 건조하다
+    - 생각보다 선풍기가 PC 열관리에 효과적이다.
+
