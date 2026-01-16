@@ -1,4 +1,4 @@
-<img width="970" height="570" alt="image" src="https://github.com/user-attachments/assets/2467d292-6f98-4ecf-8edb-351b14d2262e" /># SmallM
+# Smallm
 
 Smallm 은 학습 목적으로 LLM의 동작 원리를 파악하기 위해 직접 만들어본 모델로, 간단한 버전의 llama3 기반 모델입니다.
 
